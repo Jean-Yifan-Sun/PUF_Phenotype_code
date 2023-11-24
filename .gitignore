@@ -1,4 +1,4 @@
 /out
 /Latency-DRAM-PUF-Dataset
 /__pycache__
-run_seed.sh
+/run_seed.sh
