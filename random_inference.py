@@ -100,6 +100,9 @@ class Inference_Attack():
         self.inference_output = []
         
     def attack(self):
+        """
+        compute model outputs and attack result without threshold
+        """
         if self.model_type == 'vgg16':
             model = VGG16(num_classes=self.attack_dataset.num_class).to(self.device)
         if self.criterion == 'ce':
@@ -125,9 +128,12 @@ class Inference_Attack():
             f1 = self.F1(preds.argmax(1),ys).item()
             print(f"\nAttack Test Result: k{i+1} Attack num: {self.fake_num} Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} ")
             self.result[f'k{i+1}']={'attack_num':self.fake_num,'acc':acc,'f1':f1,'loss':test_loss}
-        pd.DataFrame(self.result).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_result.csv'))
+        pd.DataFrame(self.result).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_result_no_thr.csv'))
 
     def get_score(self):
+        """
+        compute model scores of all folds and the final model
+        """
         softmax = Softmax(dim=1)
         fold_pred = 0
         for i in trange(len(self.inference_output),position=0):
@@ -137,35 +143,38 @@ class Inference_Attack():
             
             df = pd.DataFrame(np.around(preds.detach().cpu().numpy(),3))
             df.columns = ['delta', 'gamma', 'epsilon', 'beta', 'alpha']
-            df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/k{i+1}_model_socres.csv'))
+            df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/k{i+1}_model_attack_socres.csv'))
         self.inference_output.append((fold_pred,ys))
         df = pd.DataFrame(np.around(fold_pred.detach().cpu().numpy(),3))
         df.columns = ['delta', 'gamma', 'epsilon', 'beta', 'alpha']
-        df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_Fold_model_socres.csv'))
+        df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/k{len(self.inference_output)}_model_attack_socres.csv'))
     
     def get_threshold(self):
+        """
+        compute attack result with threshold for each fold and final model
+        """
         threshold_dict = {}
         softmax = Softmax(dim=1)
         thresholds = [i/100 for i in range(100)]
         for i in trange(len(self.inference_output),position=0):
             preds,ys = self.inference_output[i]
             preds = softmax(preds)
-            indexs = preds.argmax(dim=1)
+            # indexs = preds.argmax(dim=1)
             threshold_dict[f'model_k{i+1}'] = {}
             for k in trange(len(thresholds),position=1,leave=False):
                 count = 0
                 thr = thresholds[k]
                 for j in range(len(preds)):
                     pred = preds[j]
-                    ind = indexs[j].item()
-                    val = pred[ind].item()
-                    y = ys[j].item()
-                    if val >= thr and ind == y:
+                    # ind = indexs[j].item()
+                    val = pred.max().item()
+                    # y = ys[j].item()
+                    if val >= thr :
                         count += 1
                 acc = round(count/len(preds),3)
                 threshold_dict[f'model_k{i+1}'][thr]=acc
         # print(threshold_dict)
-        pd.DataFrame(threshold_dict).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Threshold_result.csv'))
+        pd.DataFrame(threshold_dict).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_result_with_thr.csv'))
 
 if __name__ == '__main__':
     attacker = Inference_Attack()
