@@ -7,7 +7,7 @@ from dataset import PUFImageDataset
 from tqdm import tqdm,trange
 from model import *
 from settings import Settings
-import random,torch,os
+import random,torch,os,collections
 import numpy as np
 import pandas as pd
 
@@ -84,27 +84,29 @@ class PUF_VGG16_n:
             model = self.train(train_dataloader)
             self.model_list.append(model)
             self.test(test_dataloader,model,mode=f'k{i+1}_test')
-            self.test(self.test_loader,model,mode=f'test_k{i+1}')
+            # self.test(self.test_loader,model,mode=f'test_k{i+1}')
 
         self.test_k_fold()
 
     def train(self,train_dataloader):
         if  self.model_type == 'vgg16':
             model = VGG16(num_classes=self.dataset_all.num_class).to(self.device)
-            total_params = 0
-            for param in list(model.parameters()):
-                nn = 1
-                for sp in list(param.size()):
-                    nn = nn * sp
-                total_params += nn
-            self.total_params = total_params
-            print("Total parameters", self.total_params)
-            model_params = filter(lambda param: param.requires_grad,
-                                model.parameters())
-            trainable_params = sum([np.prod(param.size())
-                                    for param in model_params])
-            self.trainable_params = trainable_params
-            print("Trainable parameters", self.trainable_params)
+       
+        total_params = 0
+        for param in list(model.parameters()):
+            nn = 1
+            for sp in list(param.size()):
+                nn = nn * sp
+            total_params += nn
+        self.total_params = total_params
+        print("Total parameters", self.total_params)
+        model_params = filter(lambda param: param.requires_grad,
+                            model.parameters())
+        trainable_params = sum([np.prod(param.size())
+                                for param in model_params])
+        self.trainable_params = trainable_params
+        print("Trainable parameters", self.trainable_params)
+        
         if self.criterion == 'ce':
             loss_fn = CrossEntropyLoss()
         if self.optimizer == 'sgd':
@@ -154,7 +156,7 @@ class PUF_VGG16_n:
         test_loss = loss_fn(preds,ys).item()
         f1 = self.F1(preds.argmax(1),ys.argmax(1)).item()
         print(f"\nFold {mode} Test Result: Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} \n")
-        self.test_result[mode]={'acc':acc,'f1':f1,'loss':test_loss}        
+        # self.test_result[mode]={'acc':acc,'f1':f1,'loss':test_loss}        
 
     def test_k_fold(self):
         assert len(self.model_list)==self.k_fold
@@ -162,34 +164,57 @@ class PUF_VGG16_n:
             loss_fn = CrossEntropyLoss()
         test_loader = self.test_loader
         softmax = Softmax(dim=1)
-        preds,ys = [], []
-        with torch.no_grad():
-            for X, y in test_loader:
-                pred = 0
-                ys.append(y)
-                for i in self.model_list:
-                    i.eval()
-                    pred += i(X)/self.k_fold
-                preds.append(pred)
-        preds = torch.concat(preds,dim=0)
-        ys = torch.concat(ys,dim=0)
-        acc = self.Acc(preds.argmax(1),ys.argmax(1)).item()
-        test_loss = loss_fn(preds,ys).item()
-        f1 = self.F1(preds.argmax(1),ys.argmax(1)).item()
-        print(f"\nTest Result: Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} \n")
-        fold_pred = softmax(preds).detach().cpu().numpy()
-        df = pd.DataFrame(np.around(fold_pred,3))
-        df.columns = ['delta', 'gamma', 'epsilon', 'beta', 'alpha']
-        df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Train_Fold_model_socres.csv'))
+       
+        fl_model = VGG16(num_classes=self.dataset_all.num_class).to(self.device)
+        fl_model = integration(self.model_list,fl_model)
+        self.model_list.append(fl_model)
+       
+        for i in range(len(self.model_list)):
+            model = self.model_list[i]
+            model.eval()
+            pred,ys = [], []
+            with torch.no_grad():
+                for X, y in test_loader:
+                    pred.append(softmax(model(X)))
+                    ys.append(y)
+                pred = torch.concat(pred,dim=0)
+                ys = torch.concat(ys,dim=0)
+                acc = self.Acc(pred.argmax(1),ys.argmax(1)).item()
+                test_loss = loss_fn(pred,ys).item()
+                f1 = self.F1(pred.argmax(1),ys.argmax(1)).item()
+                print(f"\nTest Result: Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} \n")
+                self.test_result[f'k{i+1}_test']={'acc':round(acc,3),'f1':round(f1,3),'loss':round(test_loss,3)}
+                
+                fold_pred = pred.detach().cpu().numpy()
+                df = pd.DataFrame(np.around(fold_pred,3))
+                df.columns = ['delta', 'gamma', 'epsilon', 'beta', 'alpha']
+                df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/k{i+1}_model_test_socres.csv'))
 
-        self.test_result['final']={'acc':acc,'f1':f1,'loss':test_loss} 
         csv_path = os.path.join(self.output_path,f'seed_{self.seed}/Test_result.csv')
         pd.DataFrame(self.test_result).to_csv(csv_path)
+      
         for i in range(len(self.model_list)):
             pt_path = os.path.join(self.output_path,f'seed_{self.seed}/model_weights/k{i+1}_model_weights.pt')
             torch.save(self.model_list[i].state_dict(), pt_path)
 
-        
+
+def integration(model_list, fl_model):
+    """
+    combine the final model after k fold
+    """
+    worker_state_dict=[model_list[i].state_dict() for i in range(len(model_list))]
+    # print(worker_state_dict[0].keys())
+    weight_keys=list(worker_state_dict[0].keys()) # ['features.0.weight', 'features.1.weight', 'features.1.bias'.....'output.1.weight', 'output.1.bias']
+    fed_state_dict=collections.OrderedDict()
+    for key in weight_keys:
+        # print('key is {}'.format(key))
+        key_sum = 0
+        for i in range(len(model_list)):
+            key_sum += worker_state_dict[i][key]
+        fed_state_dict[key] = key_sum / float(len(model_list))
+    fl_model.load_state_dict(fed_state_dict)  # final model
+    return fl_model
+
 
 if __name__ == '__main__':
     

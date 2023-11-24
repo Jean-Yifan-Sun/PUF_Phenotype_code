@@ -103,20 +103,21 @@ class Inference_Attack():
         """
         compute model outputs and attack result without threshold
         """
+        softmax = Softmax(dim=1)
         if self.model_type == 'vgg16':
             model = VGG16(num_classes=self.attack_dataset.num_class).to(self.device)
         if self.criterion == 'ce':
             loss_fn = CrossEntropyLoss()
 
         model_paths = os.listdir(self.model_path)
-        for i in range(self.k_fold):
+        for i in range(len(model_paths)):
             state_dict = torch.load(os.path.join(self.model_path,model_paths[i]))
             model.load_state_dict(state_dict)
             model.eval()
             preds,ys = [], []
             with torch.no_grad():
                 for X, y in self.attack_dataloader:
-                    pred = model(X)
+                    pred = softmax(model(X))
                     ys.append(y)
                     preds.append(pred)
 
@@ -128,7 +129,12 @@ class Inference_Attack():
             f1 = self.F1(preds.argmax(1),ys).item()
             print(f"\nAttack Test Result: k{i+1} Attack num: {self.fake_num} Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} ")
             self.result[f'k{i+1}']={'attack_num':self.fake_num,'acc':acc,'f1':f1,'loss':test_loss}
-        pd.DataFrame(self.result).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_result_no_thr.csv'))
+
+            df = pd.DataFrame(np.around(preds.detach().cpu().numpy(),3))
+            df.columns = ['delta', 'gamma', 'epsilon', 'beta', 'alpha']
+            df.to_csv(os.path.join(self.output_path,f'seed_{self.seed}/k{i+1}_model_attack_socres.csv'))
+
+        # pd.DataFrame(self.result).to_csv(os.path.join(self.output_path,f'seed_{self.seed}/Attack_result_no_thr.csv'))
 
     def get_score(self):
         """
@@ -154,11 +160,11 @@ class Inference_Attack():
         compute attack result with threshold for each fold and final model
         """
         threshold_dict = {}
-        softmax = Softmax(dim=1)
+        # softmax = Softmax(dim=1)
         thresholds = [i/100 for i in range(100)]
         for i in trange(len(self.inference_output),position=0):
             preds,ys = self.inference_output[i]
-            preds = softmax(preds)
+            # preds = softmax(preds)
             # indexs = preds.argmax(dim=1)
             threshold_dict[f'model_k{i+1}'] = {}
             for k in trange(len(thresholds),position=1,leave=False):
@@ -179,5 +185,5 @@ class Inference_Attack():
 if __name__ == '__main__':
     attacker = Inference_Attack()
     attacker.attack()
-    attacker.get_score()
+    # attacker.get_score()
     attacker.get_threshold()
