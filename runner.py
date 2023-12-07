@@ -7,9 +7,11 @@ from dataset import PUFImageDataset
 from tqdm import tqdm,trange
 from model import *
 from settings import Settings
-import random,torch,os,collections
+import random,torch,os,collections,sys
 import numpy as np
 import pandas as pd
+
+sys.setrecursionlimit(100000)
 
 class PUF_VGG16_n:
     """
@@ -29,7 +31,10 @@ class PUF_VGG16_n:
         self.weight_decay = ss.args.weight_decay
         self.test_frac = ss.args.test_frac
         self.momentum = ss.args.momentum
+        self.dropout = ss.args.dropout
         self.output_path = ss.args.output_path
+        self.normalize = ss.args.normalize
+        self.batchnorm = ss.args.batchnorm
         path_prefix = ss.args.path_prefix
 
         if torch.cuda.is_available():
@@ -45,8 +50,12 @@ class PUF_VGG16_n:
         torch.manual_seed(self.seed)
         torch.cuda.manual_seed(self.seed)        
         
-        self.mean,self.std = PUFImageDataset(path_prefix=path_prefix,transform=None,target_transform=None).mean_std()
-        transform = Compose([Normalize(self.mean,self.std),Lambda(lambda x: x.to(self.device))])
+        if self.normalize:
+            mean,std = PUFImageDataset(path_prefix=path_prefix,transform=None,target_transform=None).mean_std()
+            transform = Compose([Normalize(mean,std),Lambda(lambda x: x.to(self.device))])
+        else:
+            transform = Lambda(lambda x: x.to(self.device))
+        
         target_transform=Lambda(lambda y: (torch.zeros(5, dtype=torch.float).scatter_(0, torch.tensor(y), value=1)).to(self.device))
         # target_transform=Lambda(lambda y: torch.tensor(y).to(self.device))
         self.dataset_all = PUFImageDataset(path_prefix=path_prefix,transform=transform,target_transform=target_transform)
@@ -78,19 +87,25 @@ class PUF_VGG16_n:
             train_index = all_index - test_index
             train_dataset = Subset(self.train_set,list(train_index))
             test_dataset = Subset(self.train_set,list(test_index))
-            train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, pin_memory=False)
+            train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True, pin_memory=False)
             # print(len(train_dataloader))
             test_dataloader = DataLoader(test_dataset, batch_size=64, shuffle=True, pin_memory=False)
-            model = self.train(train_dataloader)
+            model = self.train(train_dataloader,test_dataloader)
             self.model_list.append(model)
-            self.test(test_dataloader,model,mode=f'k{i+1}_test')
+            # self.test(test_dataloader,model,mode=f'k{i+1}_test')
             # self.test(self.test_loader,model,mode=f'test_k{i+1}')
-
+        
+        model = self.train(DataLoader(self.train_set,batch_size=32, shuffle=True, pin_memory=False))
+        self.model_list.append(model)
         self.test_k_fold()
 
-    def train(self,train_dataloader):
+
+
+    def train(self,train_dataloader,test_dataloader):
         if  self.model_type == 'vgg16':
-            model = VGG16(num_classes=self.dataset_all.num_class).to(self.device)
+            model = VGG16(num_classes=self.dataset_all.num_class,
+                          dropout=self.dropout,
+                          batchnorm=self.batchnorm).to(self.device)
        
         total_params = 0
         for param in list(model.parameters()):
@@ -106,7 +121,9 @@ class PUF_VGG16_n:
                                 for param in model_params])
         self.trainable_params = trainable_params
         print("Trainable parameters", self.trainable_params)
-        
+
+        model.apply(reset_weights)
+
         if self.criterion == 'ce':
             loss_fn = CrossEntropyLoss()
         if self.optimizer == 'sgd':
@@ -122,22 +139,24 @@ class PUF_VGG16_n:
         
         # size = len(train_dataloader.dataset)
         train_bar = tqdm(range(self.epochs),position=1,leave=False,colour='#3399FF',desc=f"{self.epochs} Epochs")
-        for T in train_bar:
+        val_bar = tqdm(range(self.epochs),position=3,leave=False,colour='#33CC00')
+        for T in zip(train_bar,val_bar):
             model.train()
             # batch_bar = trange(size,position=2,leave=False,colour='#33CC00')
             batch_bar = tqdm(train_dataloader,position=2,leave=False,colour='#33CC00')
-            for(X, y) in batch_bar:
+            for (X, y) in (batch_bar):
+                
                 optimizer.zero_grad()
                 pred = model(X)
                 loss = loss_fn(pred, y)
                 loss.backward()
                 optimizer.step()
-                
-                batch_bar.set_description(f"Loss: {loss:>7f}")
+                batch_bar.set_description(f"Train Loss: {loss:>7f}")
+            self.test(test_dataloader,model,val_bar)
         
         return model
 
-    def test(self,dataloader,model,mode):
+    def test(self,dataloader,model,bar):
         model.eval()
         if self.criterion == 'ce':
             loss_fn = CrossEntropyLoss()
@@ -152,22 +171,26 @@ class PUF_VGG16_n:
         preds = torch.concat(preds,dim=0)
         ys = torch.concat(ys,dim=0)
         # print(preds.size(),ys.size())
-        acc = self.Acc(preds.argmax(1),ys.argmax(1)).item()
+        # acc = self.Acc(preds.argmax(1),ys.argmax(1)).item()
         test_loss = loss_fn(preds,ys).item()
-        f1 = self.F1(preds.argmax(1),ys.argmax(1)).item()
-        print(f"\nFold {mode} Test Result: Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} \n")
+        # f1 = self.F1(preds.argmax(1),ys.argmax(1)).item()
+        bar.set_description(f"Valid Loss: {test_loss:>7f}")
+        # print(f"\nFold {mode} Test Result: Accuracy: {(100*acc):>0.1f}%, Avg loss: {test_loss:>8f}, F1 score: {f1:>8f} \n")
         # self.test_result[mode]={'acc':acc,'f1':f1,'loss':test_loss}        
 
     def test_k_fold(self):
-        assert len(self.model_list)==self.k_fold
+        assert len(self.model_list)==self.k_fold+1
         if self.criterion == 'ce':
             loss_fn = CrossEntropyLoss()
         test_loader = self.test_loader
         softmax = Softmax(dim=1)
-       
-        fl_model = VGG16(num_classes=self.dataset_all.num_class).to(self.device)
-        fl_model = integration(self.model_list,fl_model)
-        self.model_list.append(fl_model)
+
+        # fl_model = CombinedModel(submodellist=self.model_list).to(self.device)
+        # state_dicts = [self.model_list[i].state_dict() for i in range(len(self.model_list)) ]
+        # fl_model.load_folds_dict(state_dicts)
+        # # fl_model = VGG16(num_classes=self.dataset_all.num_class)
+        # # fl_model = integration(self.model_list,fl_model)
+        # self.model_list.append(fl_model)
        
         for i in range(len(self.model_list)):
             model = self.model_list[i]
@@ -215,6 +238,15 @@ def integration(model_list, fl_model):
     fl_model.load_state_dict(fed_state_dict)  # final model
     return fl_model
 
+def reset_weights(m):
+    '''
+    Try resetting model weights to avoid
+    weight leakage.
+    '''
+    for layer in m.children():
+        if hasattr(layer, 'reset_parameters'):
+            # print(f'Reset trainable parameters of layer = {layer}')
+            layer.reset_parameters()
 
 if __name__ == '__main__':
     

@@ -80,11 +80,15 @@ class Inference_Attack():
         self.model_path = os.path.join(ss.args.model_path, f'seed_{self.seed}/model_weights')
         self.fake_num = ss.args.fake_num
         self.output_path = ss.args.output_path
+        self.normalize = ss.args.normalize
 
-        self.mean,self.std = Fake_dataset(fake_num=self.fake_num,
-                                          seed=self.seed,device=self.device,
-                                          transform=None,target_transform=None).mean_std()
-        transform = Normalize(self.mean,self.std)
+        if self.normalize:
+            self.mean,self.std = Fake_dataset(fake_num=self.fake_num,
+                                            seed=self.seed,device=self.device,
+                                            transform=None,target_transform=None).mean_std()
+            transform = Normalize(self.mean,self.std)
+        else:
+            transform = None
         target_transform = None
 
         self.attack_dataset = Fake_dataset(fake_num=self.fake_num,

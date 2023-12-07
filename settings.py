@@ -27,12 +27,14 @@ def parse_arguments():
                            help='sgd or adam')
     argparser.add_argument("--seed", type=int, default=123454321)
     argparser.add_argument("--k_fold", type=int, default=5)
+    argparser.add_argument("--normalize", type=str2bool, default=True)
+    argparser.add_argument("--batchnorm", type=str2bool, default=True)
     argparser.add_argument("--device_num", type=int, default='3',
                            help='cuda device number')
-    argparser.add_argument("--output_path", type=str, default='/home/sunyf23/Work_station/PUF_Phenotype/out',
+    argparser.add_argument("--output_path", type=str, default='/mnt/ssd1/sunyifan/WorkStation/PUF_Phenotype/out',
                            help='output path')
-    argparser.add_argument("--path_prefix",type=str,default='/home/sunyf23/Work_station/PUF_Phenotype/Latency-DRAM-PUF-Dataset',help="PUF dataset path")
-    argparser.add_argument("--model_path",type=str,default='/home/sunyf23/Work_station/PUF_Phenotype/out/',help="vgg16 saved model path")
+    argparser.add_argument("--path_prefix",type=str,default='/mnt/ssd1/sunyifan/WorkStation/PUF_Phenotype/Latency-DRAM-PUF-Dataset',help="PUF dataset path")
+    argparser.add_argument("--model_path",type=str,default='/mnt/ssd1/sunyifan/WorkStation/PUF_Phenotype/out/',help="vgg16 saved model path")
    
     args = argparser.parse_args()
 
